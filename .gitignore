@@ -3,3 +3,6 @@ obj
 _ReSharper.*
 *.suo
 *.user
+/.vs/SuperSocket/v16/Server/sqlite3
+/.vs/SuperSocket.2013/v16/Server/sqlite3
+/.vs/SuperSocket/DesignTimeBuild
