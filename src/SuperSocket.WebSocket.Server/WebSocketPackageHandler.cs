@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using SuperSocket;
+using SuperSocket.ProtoBase;
 
 namespace SuperSocket.WebSocket.Server
 {
@@ -13,15 +14,39 @@ namespace SuperSocket.WebSocket.Server
     {
         private const string _magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         private IServiceProvider _serviceProvider;
-        private IWebSocketCommandMiddleware _websocketCommandMiddleware;
+        private IPackageHandler<WebSocketPackage> _websocketCommandMiddleware;
+
+        private Func<WebSocketSession, WebSocketPackage, Task> _packageHandlerDelegate;
 
         public WebSocketPackageHandler(IServiceProvider serviceProvider)
         {
             _serviceProvider = serviceProvider;
+
             _websocketCommandMiddleware = serviceProvider
                 .GetServices<IMiddleware>()
                 .OfType<IWebSocketCommandMiddleware>()
-                .FirstOrDefault();
+                .FirstOrDefault() as IPackageHandler<WebSocketPackage>;
+
+            _packageHandlerDelegate = serviceProvider.GetService<Func<WebSocketSession, WebSocketPackage, Task>>();
+        }
+
+        private CloseStatus GetCloseStatusFromPackage(WebSocketPackage package)
+        {
+            var reader = new SequenceReader<byte>(package.Data);
+
+            reader.TryReadBigEndian(out short closeReason);
+
+            var closeStatus = new CloseStatus
+            {
+                Reason = (CloseReason)closeReason
+            };
+
+            if (reader.Remaining > 0)
+            {
+                closeStatus.ReasonText = package.Data.Slice(2).GetString(Encoding.UTF8);
+            }
+
+            return closeStatus;
         }
 
         public async Task Handle(IAppSession session, WebSocketPackage package)
@@ -46,12 +71,40 @@ namespace SuperSocket.WebSocket.Server
                 return;
             }
 
+            if (package.OpCode == OpCode.Close)
+            {
+                if (websocketSession.CloseStatus == null)
+                {
+                    var closeStatus = GetCloseStatusFromPackage(package);
+
+                    websocketSession.CloseStatus = closeStatus;
+
+                    var message = new WebSocketMessage();
+
+                    message.OpCode = OpCode.Close;
+                    message.Data = package.Data;
+
+                    await websocketSession.SendAsync(message);
+                }                
+
+                //After both sending and receiving a Close message, the server MUST close the underlying TCP connection immediately
+                websocketSession.Close();            
+                return;
+            }
+
+            // application command
             var websocketCommandMiddleware = _websocketCommandMiddleware;
 
             if (websocketCommandMiddleware != null)
             {
-                websocketCommandMiddleware.Register(session.Server as IServer, session);
+                await websocketCommandMiddleware.Handle(session, package);
+                return;
             }
+
+            var packageHandleDelegate = _packageHandlerDelegate;
+            
+            if (packageHandleDelegate != null)
+                await packageHandleDelegate(websocketSession, package);
         }
 
         private async Task<bool> HandleHandshake(IAppSession session, WebSocketPackage p)

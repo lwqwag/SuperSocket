@@ -47,9 +47,10 @@ namespace SuperSocket.Client
             try
             {
                 await socket.ConnectAsync(remoteEndPoint);
-                _channel = new TcpPipeChannel<TReceivePackage>(socket, _pipelineFilter, new ChannelOptions(), _logger);
-                _channel.PackageReceived += OnPackageReceived;
-                _channel.Closed += OnClosed;
+                _channel = new TcpPipeChannel<TReceivePackage>(socket, _pipelineFilter, new ChannelOptions
+                {
+                    Logger = _logger
+                });
                 return true;
             }
             catch (Exception e)
@@ -59,10 +60,18 @@ namespace SuperSocket.Client
             }
         }
 
+        private async Task HandleSokcet(IChannel<TReceivePackage> channel)
+        {
+            await foreach (var p in channel.RunAsync())
+            {
+                await OnPackageReceived(channel as IChannel, p);
+            }
+
+            OnClosed(channel, EventArgs.Empty);
+        }
+
         private void OnClosed(object sender, EventArgs e)
         {
-            _channel.PackageReceived -= OnPackageReceived;
-            _channel.Closed -= OnClosed;
             Closed?.Invoke(sender, e);
         }
 

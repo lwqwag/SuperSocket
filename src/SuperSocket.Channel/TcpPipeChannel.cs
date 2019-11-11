@@ -19,8 +19,8 @@ namespace SuperSocket.Channel
 
         private List<ArraySegment<byte>> _segmentsForSend;
         
-        public TcpPipeChannel(Socket socket, IPipelineFilter<TPackageInfo> pipelineFilter, ChannelOptions options, ILogger logger)
-            : base(pipelineFilter, options, logger)
+        public TcpPipeChannel(Socket socket, IPipelineFilter<TPackageInfo> pipelineFilter, ChannelOptions options)
+            : base(pipelineFilter, options)
         {
             _socket = socket;
         }
@@ -31,50 +31,9 @@ namespace SuperSocket.Channel
             base.OnClosed();
         }
 
-        private async Task FillPipeAsync(Socket socket, PipeWriter writer)
+        protected override async ValueTask<int> FillPipeWithDataAsync(Memory<byte> memory)
         {
-            var options = Options;
-
-            while (true)
-            {
-                try
-                {
-                    var bufferSize = options.ReceiveBufferSize;
-                    var maxPackageLength = options.MaxPackageLength;
-
-                    if (maxPackageLength > 0)
-                        bufferSize = Math.Min(bufferSize, maxPackageLength);
-
-                    var memory = writer.GetMemory(bufferSize);
-
-                    var bytesRead = await ReceiveAsync(socket, memory, SocketFlags.None);         
-
-                    if (bytesRead == 0)
-                    {
-                        break;
-                    }
-
-                    // Tell the PipeWriter how much was read
-                    writer.Advance(bytesRead);
-                }
-                catch (Exception e)
-                {
-                    Logger.LogError(e, "Exception happened in ReceiveAsync");
-                    break;
-                }
-
-                // Make the data available to the PipeReader
-                var result = await writer.FlushAsync();
-
-                if (result.IsCompleted)
-                {
-                    break;
-                }
-            }
-
-            // Signal to the reader that we're done writing
-            writer.Complete();
-            Output.Writer.Complete();
+            return await ReceiveAsync(_socket, memory, SocketFlags.None);
         }
 
         private async Task<int> ReceiveAsync(Socket socket, Memory<byte> memory, SocketFlags socketFlags)
@@ -82,17 +41,7 @@ namespace SuperSocket.Channel
             return await socket.ReceiveAsync(GetArrayByMemory((ReadOnlyMemory<byte>)memory), socketFlags);
         }
 
-        protected override async Task ProcessReads()
-        {
-            var pipe = new Pipe();
-
-            Task writing = FillPipeAsync(_socket, pipe.Writer);
-            Task reading = ReadPipeAsync(pipe.Reader);
-
-            await Task.WhenAll(reading, writing);
-        }
-
-        protected override async ValueTask<int> SendAsync(ReadOnlySequence<byte> buffer)
+        protected override async ValueTask<int> SendOverIOAsync(ReadOnlySequence<byte> buffer)
         {
             if (buffer.IsSingleSegment)
             {

@@ -10,7 +10,7 @@ using Xunit.Abstractions;
 
 namespace Tests
 {
-    [Collection("Protocol.FixedHeader")]
+    [Trait("Category", "Protocol.FixedHeader")]
     public class FixedHeaderProtocolTest : ProtocolTestBase
     {
         public FixedHeaderProtocolTest(ITestOutputHelper outputHelper) : base(outputHelper)

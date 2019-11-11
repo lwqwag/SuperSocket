@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using SuperSocket.Channel;
 
@@ -7,6 +8,8 @@ namespace SuperSocket
     public interface IAppSession
     {
         string SessionID { get; }
+
+        DateTime StartTime { get; }
 
         IChannel Channel { get; }
 
@@ -18,10 +21,12 @@ namespace SuperSocket
 
         event EventHandler Closed;
 
-        object State { get; set; }
+        object DataContext { get; set; }
 
         void Initialize(IServerInfo server, IChannel channel);
 
         object this[object name] { get; set; }
+
+        bool IsConnected { get; }
     }
 }

@@ -31,7 +31,8 @@ namespace SuperSocket.Server
         private IChannelCreatorFactory _channelCreatorFactory;
         private List<IChannelCreator> _channelCreators;
         private IPackageHandler<TReceivePackageInfo> _packageHandler;
-
+        private Func<IAppSession, PackageHandlingException<TReceivePackageInfo>, ValueTask<bool>> _errorHandler;
+        
         public string Name { get; }
 
         private int _sessionCount;
@@ -49,6 +50,8 @@ namespace SuperSocket.Server
             get { return _state; }
         }
 
+        public object DataContext { get; set; }
+
         public SuperSocketService(IServiceProvider serviceProvider, IOptions<ServerOptions> serverOptions, ILoggerFactory loggerFactory, IChannelCreatorFactory channelCreatorFactory)
         {
             _serverOptions = serverOptions;
@@ -60,7 +63,17 @@ namespace SuperSocket.Server
             _logger = _loggerFactory.CreateLogger("SuperSocketService");
             _channelCreatorFactory = channelCreatorFactory;
             _packageHandler = serviceProvider.GetService<IPackageHandler<TReceivePackageInfo>>();
+            _errorHandler = serviceProvider.GetService<Func<IAppSession, PackageHandlingException<TReceivePackageInfo>, ValueTask<bool>>>();
 
+            if (_errorHandler == null)
+            {
+                _errorHandler = async (s, e) =>
+                {
+                    _logger.LogError(e.Message, e.InnerException);
+                    return await new ValueTask<bool>(true);
+                };
+            }
+            
             // initialize session factory
             _sessionFactory = serviceProvider.GetService<ISessionFactory>();
 
@@ -74,6 +87,9 @@ namespace SuperSocket.Server
         private void InitializeMiddlewares()
         {
             _middlewares = _serviceProvider.GetServices<IMiddleware>().ToArray();
+
+            if (_packageHandler == null)
+                _packageHandler = _middlewares.OfType<IPackageHandler<TReceivePackageInfo>>().FirstOrDefault();
         }
 
         protected virtual IPipelineFilterFactory<TReceivePackageInfo> GetPipelineFilterFactory()
@@ -142,15 +158,25 @@ namespace SuperSocket.Server
             HandleSession(session).DoNotAwait();
         }
 
-        void IChannelRegister.RegisterChannel(object connection)
+        async Task IChannelRegister.RegisterChannel(object connection)
         {
-            var channel = _channelCreators.FirstOrDefault().CreateChannel(connection);
+            var channel = await _channelCreators.FirstOrDefault().CreateChannel(connection);
             AcceptNewChannel(channel);
+        }
+
+        protected virtual object CreatePipelineContext(IAppSession session)
+        {
+            return session;
         }
 
         private void InitializeSession(IAppSession session, IChannel channel)
         {
             session.Initialize(this, channel);
+
+            if (channel is IPipeChannel pipeChannel)
+            {
+                pipeChannel.PipelineFilter.Context = CreatePipelineContext(session);
+            }
 
             var middlewares = _middlewares;
 
@@ -159,26 +185,6 @@ namespace SuperSocket.Server
                 for (var i = 0; i < middlewares.Length; i++)
                 {
                     middlewares[i].Register(this, session);
-                }
-            }
-
-            var packageHandler = _packageHandler;
-
-            if (packageHandler != null)
-            {
-                if (session.Channel is IChannel<TReceivePackageInfo> packegedChannel)
-                {
-                    packegedChannel.PackageReceived += async (ch, p) =>
-                    {
-                        try
-                        {
-                            await packageHandler.Handle(session, p);
-                        }
-                        catch (Exception e)
-                        {
-                            OnSessionError(session, e);
-                        }
-                    };
                 }
             }
         }
@@ -191,8 +197,29 @@ namespace SuperSocket.Server
             {
                 _logger.LogInformation($"A new session connected: {session.SessionID}");
                 session.OnSessionConnected();
-                await ((IAppSession)session).Channel.StartAsync();
+
+                var channel = session.Channel as IChannel<TReceivePackageInfo>;
+
+                await foreach (var p in channel.RunAsync())
+                {
+                    try
+                    {
+                        await _packageHandler?.Handle(session, p);
+                    }
+                    catch (Exception e)
+                    {
+                        var toClose = await _errorHandler(session, new PackageHandlingException<TReceivePackageInfo>($"Session {session.SessionID} got an error when handle a package.", p, e));
+
+                        if (toClose)
+                        {
+                            session.Close();
+                        }
+                    }                    
+                }
+
                 _logger.LogInformation($"The session disconnected: {session.SessionID}");
+
+                session.OnSessionClosed(EventArgs.Empty);                
             }
             catch (Exception e)
             {

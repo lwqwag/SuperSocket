@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.DependencyInjection;
+using SuperSocket;
 using SuperSocket.Channel;
 using SuperSocket.ProtoBase;
 
@@ -15,56 +16,49 @@ namespace SuperSocket.Command
         where TNetPackageInfo : class
         where TPackageMapper : IPackageMapper<TNetPackageInfo, TPackageInfo>, new()
     {
-        protected override IPackageMapper<TNetPackageInfo, TPackageInfo> GetPackageMapper()
+        public CommandMiddleware(IServiceProvider serviceProvider, IOptions<CommandOptions> commandOptions)
+            : base(serviceProvider, commandOptions)
+        {
+     
+        }
+
+        protected override IPackageMapper<TNetPackageInfo, TPackageInfo> CreatePackageMapper(IServiceProvider serviceProvider)
         {
             return new TPackageMapper();
         }
+    }
+
+    public class CommandMiddleware<TKey, TPackageInfo> : CommandMiddleware<TKey, TPackageInfo, TPackageInfo>
+        where TPackageInfo : class, IKeyedPackageInfo<TKey>
+    {
+
+        class TransparentMapper : IPackageMapper<TPackageInfo, TPackageInfo>
+        {
+            public TPackageInfo Map(TPackageInfo package)
+            {
+                return package;
+            }
+        }
 
         public CommandMiddleware(IServiceProvider serviceProvider, IOptions<CommandOptions> commandOptions)
             : base(serviceProvider, commandOptions)
         {
 
         }
+
+        protected override IPackageMapper<TPackageInfo, TPackageInfo> CreatePackageMapper(IServiceProvider serviceProvider)
+        {
+            return new TransparentMapper();
+        }
     }
 
-    public class CommandMiddleware<TKey, TNetPackageInfo, TPackageInfo> : CommandMiddleware<TKey, TPackageInfo>
+    public class CommandMiddleware<TKey, TNetPackageInfo, TPackageInfo> : MiddlewareBase, IPackageHandler<TNetPackageInfo>
         where TPackageInfo : class, IKeyedPackageInfo<TKey>
         where TNetPackageInfo : class
     {
+        private Dictionary<TKey, ICommand<TKey>> _commands;
 
-        IPackageMapper<TNetPackageInfo, TPackageInfo> _packageMapper;
-
-        protected virtual IPackageMapper<TNetPackageInfo, TPackageInfo> GetPackageMapper()
-        {
-            return _packageMapper;
-        }
-
-        public CommandMiddleware(IServiceProvider serviceProvider, IOptions<CommandOptions> commandOptions)
-            : base(serviceProvider, commandOptions)
-        {
-            _packageMapper = serviceProvider.GetService<IPackageMapper<TNetPackageInfo, TPackageInfo>>();
-        }
-
-        public override void Register(IServer server, IAppSession session)
-        {
-            var channel = session.Channel as IChannel<TNetPackageInfo>;
-            
-            if (channel == null)
-                throw new Exception("Unmatched package type.");
-
-            var packageMapper = GetPackageMapper();
-            
-            channel.PackageReceived += async (ch, p) =>
-            {
-                await OnPackageReceived(session, packageMapper.Map(p));
-            };
-        }
-    }
-
-    public class CommandMiddleware<TKey, TPackageInfo> : MiddlewareBase
-        where TPackageInfo : class, IKeyedPackageInfo<TKey>
-    {
-        private Dictionary<TKey, ICommand<TKey>> _commands;        
+        protected IPackageMapper<TNetPackageInfo, TPackageInfo> PackageMapper { get; private set; }    
 
         public CommandMiddleware(IServiceProvider serviceProvider, IOptions<CommandOptions> commandOptions)
         {
@@ -79,22 +73,21 @@ namespace SuperSocket.Command
                 _commands = commands.ToDictionary(x => x.Key);
             else
                 _commands = commands.ToDictionary(x => x.Key, comparer);
+
+            PackageMapper = CreatePackageMapper(serviceProvider);
+        }
+
+        protected virtual IPackageMapper<TNetPackageInfo, TPackageInfo> CreatePackageMapper(IServiceProvider serviceProvider)
+        {
+            return serviceProvider.GetService<IPackageMapper<TNetPackageInfo, TPackageInfo>>();
         }
 
         public override void Register(IServer server, IAppSession session)
         {
-            var channel = session.Channel as IChannel<TPackageInfo>;
-            
-            if (channel == null)
-                throw new Exception("Unmatched package type.");
-            
-            channel.PackageReceived += async (ch, p) =>
-            {
-                await OnPackageReceived(session, p);
-            };
+
         }
 
-        protected async Task OnPackageReceived(IAppSession session, TPackageInfo package)
+        protected virtual async Task HandlePackage(IAppSession session, TPackageInfo package)
         {
             if (!_commands.TryGetValue(package.Key, out ICommand<TKey> command))
             {
@@ -110,6 +103,16 @@ namespace SuperSocket.Command
             }
 
             ((ICommand<TKey, TPackageInfo>)command).Execute(session, package);
+        }
+
+        protected virtual async Task OnPackageReceived(IAppSession session, TPackageInfo package)
+        {
+            await HandlePackage(session, package);
+        }
+
+        Task IPackageHandler<TNetPackageInfo>.Handle(IAppSession session, TNetPackageInfo package)
+        {
+            return HandlePackage(session, PackageMapper.Map(package));
         }
     }
 }

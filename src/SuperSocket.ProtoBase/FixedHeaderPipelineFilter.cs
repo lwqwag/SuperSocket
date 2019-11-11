@@ -21,45 +21,39 @@ namespace SuperSocket.ProtoBase
             if (!_foundHeader)
             {
                 if (reader.Length < _headerSize)
-                    return null;
+                    return null;                
                 
-                _foundHeader = true;
                 var header = reader.Sequence.Slice(0, _headerSize);
                 var bodyLength = GetBodyLengthFromHeader(header);
                 
                 if (bodyLength < 0)
-                {
                     throw new ProtocolException("Failed to get body length from the package header.");
-                }
-                else if (bodyLength == 0)
-                {
-                    reader.Advance(_headerSize);
+                
+                if (bodyLength == 0)
                     return DecodePackage(header);
-                }
-                else
-                {
-                    _totalSize = _headerSize + bodyLength;
-                }
+                
+                _foundHeader = true;
+                _totalSize = _headerSize + bodyLength;
             }
 
             var totalSize = _totalSize;
 
-            if (reader.Length > totalSize)
+            if (reader.Length < totalSize)
+                return null;
+
+            var pack = reader.Sequence.Slice(0, totalSize);
+
+            try
+            {
+                return DecodePackage(pack);
+            }
+            finally
             {
                 reader.Advance(totalSize);
-                return DecodePackage(reader.Sequence.Slice(0, totalSize));
-            }
-            else if (reader.Length == totalSize)
-            {
-                reader.Advance(totalSize);                        
-                return DecodePackage(reader.Sequence);
-            }
-
-            return null;           
+            } 
         }
         
         protected abstract int GetBodyLengthFromHeader(ReadOnlySequence<byte> buffer);
-
 
         public override void Reset()
         {

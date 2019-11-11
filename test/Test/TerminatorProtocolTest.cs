@@ -9,7 +9,7 @@ using Xunit.Abstractions;
 
 namespace Tests
 {
-    [Collection("Protocol.Terminator")]
+    [Trait("Category", "Protocol.Terminator")]
     public class TerminatorProtocolTest : ProtocolTestBase
     {
         public TerminatorProtocolTest(ITestOutputHelper outputHelper) : base(outputHelper)

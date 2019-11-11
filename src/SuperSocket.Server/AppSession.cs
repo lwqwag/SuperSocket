@@ -9,6 +9,11 @@ namespace SuperSocket.Server
     {
         private IChannel _channel;
 
+        protected internal IChannel Channel
+        {
+            get { return _channel; }
+        }
+
         public AppSession()
         {
             SessionID = Guid.NewGuid().ToString();
@@ -17,11 +22,15 @@ namespace SuperSocket.Server
         void IAppSession.Initialize(IServerInfo server, IChannel channel)
         {
             Server = server;
+            StartTime = DateTime.Now;
             _channel = channel;
-            _channel.Closed += OnSessionClosed;
         }
 
         public string SessionID { get; }
+
+        public DateTime StartTime { get; private set; }
+
+        public bool IsConnected { get; private set; }
 
         public IServerInfo Server { get; private set; }
 
@@ -30,7 +39,7 @@ namespace SuperSocket.Server
            get { return _channel; }
        }
 
-        public object State { get; set; }
+        public object DataContext { get; set; }
 
         public event EventHandler Connected;
 
@@ -69,15 +78,15 @@ namespace SuperSocket.Server
             }
         }
 
-        private void OnSessionClosed(object sender, EventArgs e)
+        internal void OnSessionClosed(EventArgs e)
         {
-            var channel = sender as IChannel;
-            channel.Closed -= OnSessionClosed;
+            IsConnected = false;
             Closed?.Invoke(this, e);
         }
 
         internal void OnSessionConnected()
         {
+            IsConnected = true;
             Connected?.Invoke(this, EventArgs.Empty);
         }
 
@@ -86,6 +95,17 @@ namespace SuperSocket.Server
             lock (_channel)
             {
                 return _channel.SendAsync(data);
+            }
+        }
+
+        public void Close()
+        {
+            try
+            {
+                Channel?.Close();
+            }
+            catch
+            {
             }
         }
     }
