@@ -191,14 +191,31 @@ namespace SuperSocket.Channel
         public override async ValueTask SendAsync(ReadOnlyMemory<byte> buffer)
         {
             var writer = Out.Writer;
-            await writer.WriteAsync(buffer);
+            WriteBuffer(writer, buffer);
+            await writer.FlushAsync();
+        }
+
+        private void WriteBuffer(PipeWriter writer, ReadOnlyMemory<byte> buffer)
+        {
+            lock (writer)
+            {
+                writer.Write(buffer.Span);
+            }
         }
 
         public override async ValueTask SendAsync<TPackage>(IPackageEncoder<TPackage> packageEncoder, TPackage package)
         {
             var writer = Out.Writer;
-            packageEncoder.Encode(writer, package);
+            WritePackageWithEncoder<TPackage>(writer, packageEncoder, package);
             await writer.FlushAsync();
+        }
+
+        private void WritePackageWithEncoder<TPackage>(PipeWriter writer, IPackageEncoder<TPackage> packageEncoder, TPackage package)
+        {
+            lock (writer)
+            {
+                packageEncoder.Encode(writer, package);
+            }
         }
 
         protected internal ArraySegment<T> GetArrayByMemory<T>(ReadOnlyMemory<T> memory)
@@ -225,13 +242,16 @@ namespace SuperSocket.Channel
                 try
                 {
                     if (result.IsCanceled)
+                    {
+                        WriteEOFPackage();
                         break;
+                    }
 
                     var completed = result.IsCompleted;
 
                     if (buffer.Length > 0)
                     {
-                        if (!ReaderBuffer(buffer, out consumed, out examined))
+                        if (!ReaderBuffer(ref buffer, out consumed, out examined))
                         {
                             completed = true;
                             break;
@@ -239,13 +259,17 @@ namespace SuperSocket.Channel
                     }
 
                     if (completed)
+                    {
+                        WriteEOFPackage();
                         break;
+                    }
                 }
                 catch (Exception e)
                 {
                     Logger.LogCritical(e, "Protocol error");
                     // close the connection if get a protocol error
                     Close();
+                    WriteEOFPackage();
                     break;
                 }
                 finally
@@ -257,7 +281,12 @@ namespace SuperSocket.Channel
             reader.Complete();
         }
 
-        private bool ReaderBuffer(ReadOnlySequence<byte> buffer, out SequencePosition consumed, out SequencePosition examined)
+        private void WriteEOFPackage()
+        {
+            _packagePipe.Write(null);
+        }
+
+        private bool ReaderBuffer(ref ReadOnlySequence<byte> buffer, out SequencePosition consumed, out SequencePosition examined)
         {
             consumed = buffer.Start;
             examined = buffer.End;
@@ -296,7 +325,6 @@ namespace SuperSocket.Channel
                     Logger.LogError($"Package cannot be larger than {maxPackageLength}.");
                     // close the the connection directly
                     Close();
-                    _packagePipe.Write(null);
                     return false;
                 }
             

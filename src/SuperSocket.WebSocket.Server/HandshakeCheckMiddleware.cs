@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace SuperSocket.WebSocket.Server
 {
@@ -18,23 +19,24 @@ namespace SuperSocket.WebSocket.Server
 
         private Timer _checkingTimer;
 
-
-        public override void Register(IServer server, IAppSession session)
+        public override void Register(IServer server)
         {
-            _openHandshakePendingQueue.Enqueue(session as WebSocketSession);
-            (session as WebSocketSession).CloseHandshakeStarted += OnCloseHandshakeStarted;
             _checkingTimer = new Timer(HandshakePendingQueueCheckingCallback, null, _handshakePendingQueueCheckingInterval * 1000, _handshakePendingQueueCheckingInterval * 1000); // hardcode to 1 minute for now
+        }
+
+
+        public override ValueTask<bool> HandleSession(IAppSession session)
+        {
+            var websocketSession = session as WebSocketSession;
+            _openHandshakePendingQueue.Enqueue(websocketSession);
+            websocketSession.CloseHandshakeStarted += OnCloseHandshakeStarted;            
+            return new ValueTask<bool>(true);
         }
 
         private void OnCloseHandshakeStarted(object sender, EventArgs e)
         {
             var session = sender as WebSocketSession;
             session.CloseHandshakeStarted -= OnCloseHandshakeStarted;
-            _closeHandshakePendingQueue.Enqueue(session);
-        }
-
-        internal void EnqueueClosingSession(WebSocketSession session)
-        {
             _closeHandshakePendingQueue.Enqueue(session);
         }
 
